@@ -27,6 +27,11 @@
 #include "Runtime/MovieScene/Public/MovieSceneFolder.h"
 #include "Runtime/MovieScene/Public/MovieSceneSpawnable.h"
 #include "Runtime/MovieScene/Public/MovieScenePossessable.h"
+
+/** @THE2H_MODIFY_START */
+#include "Runtime/MovieSceneTracks/Public/Sections/MovieSceneEventTriggerSection.h"
+/** @THE2H_MODIFY_END */
+
 #if ENGINE_MINOR_VERSION < 18
 #include "Editor/UnrealEd/Private/FbxImporter.h"
 #else
@@ -616,7 +621,15 @@ PyObject *py_ue_sequencer_possessables_guid(ue_PyUObject *self, PyObject * args)
 	for (int32 i = 0; i < scene->GetPossessableCount(); i++)
 	{
 		FMovieScenePossessable possessable = scene->GetPossessable(i);
-		PyObject *py_possessable = PyUnicode_FromString(TCHAR_TO_UTF8(*possessable.GetGuid().ToString()));
+		PyObject *py_possessable_guid = PyUnicode_FromString(TCHAR_TO_UTF8(*possessable.GetGuid().ToString()));
+		PyObject *py_possessable_name = PyUnicode_FromString(TCHAR_TO_UTF8(*possessable.GetName()));
+		//PyObject *py_string_name = PyUnicode_FromString("Name");
+		//PyObject *py_string_guid = PyUnicode_FromString("Guid");
+		PyObject *py_possessable = PyList_New(0);
+		PyList_Append(py_possessable, py_possessable_name);
+		PyList_Append(py_possessable, py_possessable_guid);
+		//PyObject PyDict_SetItem(py_possessable, py_string_guid, py_possessable_guid);
+		//PyObject PyDict_SetItem(py_possessable, py_string_name, py_possessable_name);
 		PyList_Append(py_possessables, py_possessable);
 	}
 
@@ -1066,7 +1079,9 @@ PyObject *py_ue_sequencer_section_add_key(ue_PyUObject *self, PyObject * args)
 	int interpolation = 0;
 	PyObject *py_unwind = nullptr;
 
-	if (!PyArg_ParseTuple(args, "fO|iO:sequencer_section_add_key", &time, &py_value, &interpolation, &py_unwind))
+	// THE2H added event_binding arguement
+	char *event_binding = nullptr;
+	if (!PyArg_ParseTuple(args, "fO|iOs:sequencer_section_add_key", &time, &py_value, &interpolation, &py_unwind, &event_binding))
 	{
 		return nullptr;
 	}
@@ -1083,7 +1098,17 @@ PyObject *py_ue_sequencer_section_add_key(ue_PyUObject *self, PyObject * args)
 	if (!MovieScene)
 		return PyErr_Format(PyExc_Exception, "unable to retrieve scene from section");
 
-	FFrameNumber FrameNumber = MovieScene->GetTickResolution().AsFrameNumber(time);
+	FFrameNumber FrameNumber(0);
+	if (event_binding != nullptr)
+	{
+		FFrameRate TickResolution = MovieScene->GetTickResolution();
+		FFrameRate DisplayRate = MovieScene->GetDisplayRate();
+		FFrameRate UE4FrameRate = TickResolution / DisplayRate; // time is sequence key location here 
+		FrameNumber = UE4FrameRate.AsFrameNumber(time);
+	}
+	else
+		FrameNumber = MovieScene->GetTickResolution().AsFrameNumber(time);
+	
 	EMovieSceneKeyInterpolation InterpolationMode = (EMovieSceneKeyInterpolation)interpolation;
 
 	section->Modify();
@@ -1308,6 +1333,21 @@ PyObject *py_ue_sequencer_section_add_key(ue_PyUObject *self, PyObject * args)
 			Py_RETURN_NONE;
 }
 	}
+	/** @THE2H_MODIFY_START */
+	else if (auto SectionBase = Cast<UMovieSceneEventSectionBase>(section))
+	{
+		if (auto TriggerSection = Cast<UMovieSceneEventTriggerSection>(SectionBase))
+		{
+			FMovieSceneEvent EventValue;
+			EventValue.FunctionName = FName(event_binding); //
+			FString debug_string = EventValue.FunctionName.ToString();
+			TriggerSection->EventChannel.GetData().AddKey(FrameNumber, EventValue);
+		}
+
+		Py_RETURN_NONE;
+	}
+	/** @THE2H_MODIFY_END */
+
 
 	return PyErr_Format(PyExc_Exception, "unsupported section type: %s", TCHAR_TO_UTF8(*section->GetClass()->GetName()));
 }
@@ -1559,7 +1599,12 @@ PyObject *py_ue_sequencer_import_fbx_transform(ue_PyUObject *self, PyObject * ar
 	UnFbx::FBXImportOptions* ImportOptions = FbxImporter->GetImportOptions();
 	bool bConverteScene = ImportOptions->bConvertScene;
 	bool bConverteSceneUnit = ImportOptions->bConvertSceneUnit;
-	bool bForceFrontXAxis = ImportOptions->bForceFrontXAxis;
+	bool bForceFrontXAxis = ImportOptions->bForceFrontXAxis;  // false
+
+	// Match by Name only = false
+	// force front xaxis = false
+	// create cameras = false
+	// reduce keys = false
 
 	ImportOptions->bConvertScene = true;
 	ImportOptions->bConvertSceneUnit = true;
